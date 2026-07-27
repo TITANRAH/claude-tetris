@@ -1,0 +1,86 @@
+name: Claude Issue Triage
+
+on:
+  issues:
+    types: [opened, edited]
+
+# Evita ejecuciones solapadas sobre el mismo issue (p.ej. varias ediciones rápidas)
+concurrency:
+  group: issue-triage-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    # Guarda anti-bucle: al editar el cuerpo del issue, Claude re-dispara el evento 'edited'.
+    # Ignoramos las ediciones hechas por github-actions[bot] (las que hace la propia action).
+    if: github.event.sender.login != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # necesario para crear/asignar labels, comentar y editar el cuerpo del issue
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Issue Triage
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh label list:*),Bash(gh label create:*)"'
+          prompt: |
+            Estás haciendo triage automático de un issue de GitHub en el repositorio
+            ${{ github.repository }}, número de issue ${{ github.event.issue.number }}.
+
+            Este proyecto es un Tetris en JavaScript vanilla (sin build, sin dependencias).
+            Toda la lógica del juego vive en `game.js` (funciones top-level sobre estado
+            global: `board`, `current`, `next`, `score`, `lines`, `level`, etc.). Antes de
+            diagnosticar, lee `CLAUDE.md` en la raíz del repo para entender la arquitectura
+            (modelo de tablero, colisiones, wall kicks, game loop, line clearing, scoring,
+            ghost piece, renderizado) y usa esos nombres de funciones/variables cuando
+            referencies causas probables.
+
+            Sigue estos pasos, en orden:
+
+            1. Ejecuta `gh issue view ${{ github.event.issue.number }} --json title,body,labels`
+               para leer el título, cuerpo y labels actuales del issue.
+
+            2. Determina entre 1 y 3 labels apropiados para este issue:
+               - Un label de **tipo**: `bug`, `enhancement`, `question` o `documentation`.
+               - Opcionalmente, un label de **área** relacionado con el juego, por ejemplo:
+                 `gameplay`, `rendering`, `controls`, `scoring`, `performance`.
+               - Opcionalmente, un label de **prioridad** si el issue lo amerita claramente
+                 (`priority: high`, etc.), sin forzarlo si no es evidente.
+               Para cada label elegido:
+               - Ejecuta `gh label list` para ver si ya existe.
+               - Si no existe, créalo con `gh label create "<nombre>" --color <hex> --description "<desc corta>"`
+                 usando un color y descripción razonables.
+               - Asígnalo al issue con `gh issue edit ${{ github.event.issue.number }} --add-label "<nombre>"`.
+               No elimines labels existentes que ya tenga el issue salvo que sean claramente
+               incorrectos.
+
+            3. Redacta un **diagnóstico general** en español, con este contenido:
+               - Resumen breve del problema reportado.
+               - Causa probable o zona del código afectada (referencia funciones/archivos
+                 concretos de `game.js` cuando sea posible, según lo que leíste en CLAUDE.md).
+               - Pasos sugeridos de alto nivel para abordar la solución (no implementes código,
+                 solo diagnostica).
+               Publica este diagnóstico como comentario en el issue con:
+               `gh issue comment ${{ github.event.issue.number }} --body "<diagnóstico>"`.
+
+            4. Anexa un resumen estructurado al **cuerpo** del issue, delimitado por los
+               marcadores HTML `<!-- claude-triage:start -->` y `<!-- claude-triage:end -->`.
+               - Si el cuerpo actual (obtenido en el paso 1) YA contiene un bloque delimitado
+                 por esos marcadores, reemplázalo por la versión actualizada (no dupliques el
+                 bloque ni lo agregues dos veces).
+               - Si no existe el bloque, agrégalo al final del cuerpo actual.
+               - El bloque debe incluir, en formato markdown breve: tipo de problema detectado,
+                 área/archivo del código probablemente involucrado, y nivel de severidad estimado.
+               - Aplica el cambio con
+                 `gh issue edit ${{ github.event.issue.number }} --body "<cuerpo completo actualizado>"`
+                 (pasando el cuerpo completo, con el resto del contenido original intacto).
+
+            Todo el texto de cara al usuario (comentario, resumen en el cuerpo, descripciones de
+            labels) debe estar en español, siguiendo el idioma del proyecto (`lang="es"`).
